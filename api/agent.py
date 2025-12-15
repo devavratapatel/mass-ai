@@ -1,5 +1,5 @@
 from langgraph.graph import StateGraph, START, END
-from typing import TypedDict, List
+from typing import TypedDict, List, Any  # Added Any
 import os
 import time
 from dotenv import load_dotenv
@@ -11,7 +11,6 @@ import google.generativeai as genai
 load_dotenv()
 
 # --- 1. Configure Google GenAI directly ---
-# We use the raw SDK to upload files, as it's cleaner than LangChain for this specific task
 genai.configure(api_key=os.environ["GOOGLE_API_KEY"])
 
 # Global cache for the uploaded file handle
@@ -23,25 +22,18 @@ def get_file_handle():
     if UPLOADED_FILE:
         return UPLOADED_FILE
     
-    # Check for your PDF file (Adjust filename as needed)
-    # We prioritize the largest file or merge them if you prefer, 
-    # but for simplicity, let's load the main one.
     target_file = None
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     
+    # Ensure this matches your actual file name
     pdf1 = os.path.join(BASE_DIR, "pdf1.pdf")
     if os.path.exists(pdf1):
         target_file = pdf1
     
-    # Note: If you have multiple files, Gemini supports uploading multiple,
-    # but let's start with one to fix the crash.
-    
     if target_file:
         print(f"Uploading {target_file} to Google...")
-        # This uploads the file to Google's cloud. 0 RAM used on Render.
         myfile = genai.upload_file(target_file)
         
-        # Wait for processing to complete
         while myfile.state.name == "PROCESSING":
             print("Processing file on Google servers...")
             time.sleep(2)
@@ -62,9 +54,11 @@ llm = ChatGoogleGenerativeAI(
 
 SYSTEM_PROMPT = "You are a helpful assistant. Use the provided document to answer questions."
 
+# --- FIX IS HERE ---
 class AgentState(TypedDict):
     input: str
     history: List[BaseMessage]
+    response: Any  # <--- This was missing! Required to pass the stream back.
 
 def generate_response(state: AgentState):
     file_handle = get_file_handle()
@@ -73,10 +67,7 @@ def generate_response(state: AgentState):
         SystemMessage(content=SYSTEM_PROMPT),
     ]
     
-    # If we have a file, we send it as a 'media' block
     if file_handle:
-        # LangChain-Google-GenAI specific format for passing file handles
-        # We construct a message that contains the file reference
         content_parts = [
             {"type": "text", "text": f"User Question: {state['input']}"},
             {
@@ -89,9 +80,11 @@ def generate_response(state: AgentState):
     else:
         messages.append(HumanMessage(content=state['input']))
 
-    # Add history
     messages.extend(state.get("history", []))
 
+    # We return the generator. 
+    # Note: In production graphs, we usually shouldn't store generators in state,
+    # but for this direct streaming setup, it works if the key exists in AgentState.
     response_stream = llm.stream(messages)
     return {"response": response_stream}
 
@@ -104,12 +97,16 @@ def create_agent():
 
 def run_Agent(input_text: str):
     agent = create_agent()
-    stream_iterator = agent.stream({"input": input_text, "history": []}) 
+    # Initialize with empty response key to be safe
+    stream_iterator = agent.stream({"input": input_text, "history": [], "response": None}) 
     
     for chunk in stream_iterator:
         if "generate_response" in chunk:
-            response_stream = chunk["generate_response"]["response"]
-            for message_chunk in response_stream:
-                content = message_chunk.content
-                if content:
-                    yield content
+            # This check ensures we have data before accessing ["response"]
+            node_output = chunk["generate_response"]
+            if node_output and "response" in node_output:
+                response_stream = node_output["response"]
+                for message_chunk in response_stream:
+                    content = message_chunk.content
+                    if content:
+                        yield content
