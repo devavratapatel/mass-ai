@@ -1,0 +1,17 @@
+langgraph
+langchain
+python-dotenv
+langchain-core
+langchain-community
+openai
+langchain-text-splitters
+flask
+chromadb
+pypdf
+flask-cors
+langchain-openai
+sentence-transformers
+pydantic
+langchain-classic
+langchain-openai
+langchain-google-genai

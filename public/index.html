@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Analytical Agent Chat Interface</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7fafc;
+        }
+        /* Custom scrollbar for chat history */
+        #chat-history::-webkit-scrollbar {
+            width: 8px;
+        }
+        #chat-history::-webkit-scrollbar-thumb {
+            background-color: #cbd5e1;
+            border-radius: 4px;
+        }
+        #chat-history::-webkit-scrollbar-track {
+            background-color: #f1f5f9;
+        }
+        .user-message {
+            background-color: #1d4ed8;
+            color: white;
+            border-bottom-right-radius: 0;
+        }
+        .agent-message {
+            background-color: #e2e8f0;
+            color: #1f2937;
+            border-bottom-left-radius: 0;
+        }
+    </style>
+</head>
+<body class="flex items-center justify-center min-h-screen p-4 sm:p-6 md:p-8">
+
+    <div class="w-full max-w-2xl bg-white shadow-2xl rounded-xl flex flex-col h-[90vh] max-h-[800px] overflow-hidden">
+        
+        <header class="p-4 bg-gray-800 text-white rounded-t-xl shadow-lg">
+            <h1 class="text-xl font-bold flex items-center">
+                <svg class="w-6 h-6 mr-2 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19V6l2-2 2 2v13M9 19c-3.111 0-5.741-1.35-7-4 1.259-2.65 3.889-4 7-4s5.741 1.35 7 4c-1.259 2.65-3.889 4-7 4zm0 0h6m0-6c-3.111 0-5.741 1.35-7-4 1.259-2.65 3.889-4 7-4s5.741 1.35 7 4c-1.259 2.65-3.889 4-7 4m0 0h-6"></path></svg>
+                Analytical Agent
+            </h1>
+        </header>
+
+        <div id="chat-history" class="flex-grow p-4 space-y-4 overflow-y-auto">
+            <div class="flex justify-start">
+                <div class="agent-message max-w-xs sm:max-w-md p-3 rounded-xl shadow-md">
+                    Hello. I am the Analytical Agent, prepared to process your queries.
+                </div>
+            </div>
+            </div>
+
+        <form id="chat-form" class="p-4 bg-gray-100 border-t border-gray-200">
+            <div class="flex space-x-3">
+                <input
+                    type="text"
+                    id="user-input"
+                    placeholder="Ask the agent a question..."
+                    required
+                    autocomplete="off"
+                    class="flex-grow p-3 border border-gray-300 rounded-lg focus:outline-none focus:border-indigo-500 transition duration-150"
+                >
+                <button
+                    type="submit"
+                    id="send-button"
+                    class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-4 rounded-lg shadow-md transition duration-150 disabled:bg-indigo-400"
+                >
+                    Send
+                </button>
+            </div>
+            <div id="loading-indicator" class="mt-2 text-sm text-indigo-600 hidden">
+                Agent is streaming response...
+            </div>
+        </form>
+    </div>
+
+    <script type="module">
+        // --- Firebase Context Setup (Mandatory for Canvas Environment) ---
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global variables provided by the Canvas environment
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let app, db, auth;
+
+        if (Object.keys(firebaseConfig).length > 0) {
+            app = initializeApp(firebaseConfig);
+            db = getFirestore(app);
+            auth = getAuth(app);
+
+            // Authentication Setup
+            const authenticate = async () => {
+                try {
+                    if (initialAuthToken) {
+                        await signInWithCustomToken(auth, initialAuthToken);
+                        console.log("Authenticated with custom token.");
+                    } else {
+                        await signInAnonymously(auth);
+                        console.log("Authenticated anonymously.");
+                    }
+                } catch (error) {
+                    console.error("Firebase Auth failed:", error);
+                }
+            };
+            authenticate();
+        }
+
+        // --- Chatbot Logic ---
+        const chatForm = document.getElementById('chat-form');
+        const userInput = document.getElementById('user-input');
+        const chatHistory = document.getElementById('chat-history');
+        const sendButton = document.getElementById('send-button');
+        const loadingIndicator = document.getElementById('loading-indicator');
+        
+        // Decoder for network streams
+        const textDecoder = new TextDecoder('utf-8');
+
+        /**
+         * Adds a message bubble to the chat history.
+         * @param {string} text - The message content.
+         * @param {string} role - 'user' or 'agent'.
+         * @param {string} messageId - Unique ID for the message element.
+         * @returns {HTMLElement} The created bubble element.
+         */
+        const addMessage = (text, role, messageId = null) => {
+            const container = document.createElement('div');
+            container.className = `flex ${role === 'user' ? 'justify-end' : 'justify-start'}`;
+
+            const bubble = document.createElement('div');
+            bubble.className = `${role}-message max-w-xs sm:max-w-md p-3 rounded-xl shadow-md`;
+            bubble.innerHTML = text; // InnerHTML to support markdown/links
+
+            if (messageId) {
+                bubble.id = messageId;
+            }
+
+            container.appendChild(bubble);
+            chatHistory.appendChild(container);
+            chatHistory.scrollTop = chatHistory.scrollHeight; // Scroll to bottom
+            return bubble;
+        };
+
+        /**
+         * Real-time streaming function. Reads response from a ReadableStream and appends it.
+         * @param {ReadableStreamDefaultReader} reader - The reader for the response body stream.
+         * @param {HTMLElement} element - The DOM element to append the text to.
+         */
+        const streamResponse = async (reader, element) => {
+            let done;
+            let value;
+            let fullText = "";
+            
+            // Add initial cursor
+            element.innerHTML = '<span class="animate-pulse">|</span>';
+
+            while (!done) {
+                ({ value, done } = await reader.read());
+                
+                if (done) break;
+
+                // Decode and append the chunk of text
+                // The { stream: true } option allows multi-byte characters to be handled across chunks
+                const chunk = textDecoder.decode(value, { stream: true });
+                fullText += chunk;
+
+                // Update the bubble content (replace the cursor with new text + cursor)
+                element.innerHTML = fullText.replace(/\|$/, '') + '<span class="animate-pulse">|</span>';
+                
+                // Keep scrolling to the bottom
+                chatHistory.scrollTop = chatHistory.scrollHeight;
+            }
+
+            // Remove the final cursor and append any remaining decoded text
+            fullText += textDecoder.decode();
+            element.innerHTML = fullText;
+        };
+
+
+        /**
+         * Connects to the agent's streaming endpoint (/agent).
+         * * This is the production-ready implementation that expects the backend (api.py)
+         * to be running and configured to stream the response (e.g., using Flask's Response generator).
+         * @param {string} input - The user's query.
+         * @param {HTMLElement} agentBubble - The chat bubble element to stream into.
+         * @returns {Promise<void>}
+         */
+        const run_agent = async (input, agentBubble) => {
+            // URL matching the user's api.py endpoint
+            // *** AMENDED LINE: Use full URL since we might load index.html from 'file://' ***
+            const agentUrl = 'http://127.0.0.1:5000/agent'; 
+
+            try {
+                // Fetch call expecting a streaming response (ReadableStream in the body)
+                const response = await fetch(agentUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ input: input }) // Send input in JSON format
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Agent server returned status ${response.status}. Please ensure your api.py server is running.`);
+                }
+
+                if (!response.body) {
+                     throw new Error("Agent server did not return a streamable response body. Check backend implementation.");
+                }
+
+                // Get the reader from the network stream
+                const reader = response.body.getReader();
+                
+                // Start streaming the network response directly to the chat bubble
+                await streamResponse(reader, agentBubble);
+
+            } catch (error) {
+                console.error("Agent Process Error:", error);
+                throw new Error(`Error connecting to agent: ${error.message}`);
+            }
+        };
+
+
+        /**
+         * Handles user submission, displays message, and calls the agent function.
+         * @param {string} query - The user's message.
+         */
+        const handleUserMessage = async (query) => {
+            const messageId = `agent-msg-${Date.now()}`;
+            
+            // 1. Show User Message
+            addMessage(query, 'user');
+
+            // 2. Prepare Agent Message Container and Loading State
+            // Initializing with the cursor for immediate visual feedback
+            const agentBubble = addMessage('<span class="animate-pulse">|</span>', 'agent', messageId);
+            sendButton.disabled = true;
+            loadingIndicator.classList.remove('hidden');
+
+            try {
+                // 3. Call the Agent function, passing the bubble element for direct streaming
+                await run_agent(query, agentBubble);
+
+            } catch (error) {
+                // Final failure message if run_agent throws
+                agentBubble.innerHTML = error.message;
+            }
+
+            // 4. Reset UI State
+            sendButton.disabled = false;
+            loadingIndicator.classList.add('hidden');
+            userInput.focus();
+        };
+
+        // Handle form submission
+        chatForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const query = userInput.value.trim();
+            if (query) {
+                handleUserMessage(query);
+                userInput.value = ''; // Clear input field
+            }
+        });
+        
+        // Focus on input when the app loads
+        window.onload = () => {
+             userInput.focus();
+        };
+
+    </script>
+</body>
+</html>
