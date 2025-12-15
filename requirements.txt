@@ -6,3 +6,4 @@ langchain-community
 langchain-google-genai
 langgraph
 google-generativeai
+gunicorn
