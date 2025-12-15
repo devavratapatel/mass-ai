@@ -194,7 +194,7 @@
         const run_agent = async (input, agentBubble) => {
             // URL matching the user's api.py endpoint
             // *** AMENDED LINE: Use full URL since we might load index.html from 'file://' ***
-            const agentUrl = 'http://127.0.0.1:5000/agent'; 
+            const agentUrl = '/agent'; 
 
             try {
                 // Fetch call expecting a streaming response (ReadableStream in the body)
