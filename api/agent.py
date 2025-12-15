@@ -15,7 +15,7 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, Base
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 
 try:
-    from prompts import SYSTEM_PROMPT, HUMAN_PROMPT
+    from api.prompts import SYSTEM_PROMPT, HUMAN_PROMPT
 except ImportError:
     SYSTEM_PROMPT = "You are a helpful assistant."
     HUMAN_PROMPT = "Context: {context}\n\nQuestion: {input}"
@@ -29,12 +29,17 @@ class AgentState(TypedDict):
 try:
 
     embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    pdf1_path = os.path.join(BASE_DIR, "pdf1.pdf")
+    pdf2_path = os.path.join(BASE_DIR, "pdf2.pdf")
 
     docs_to_load = []
-    if os.path.exists("pdf1.pdf"):
-        docs_to_load.append("pdf1.pdf")
-    if os.path.exists("pdf2.pdf"):
-        docs_to_load.append("pdf2.pdf")
+
+    if os.path.exists(pdf1_path):
+        docs_to_load.append(pdf1_path)
+
+    if os.path.exists(pdf2_path):
+        docs_to_load.append(pdf2_path)
 
     if docs_to_load:
         documents = []
