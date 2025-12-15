@@ -1,124 +1,114 @@
 from langgraph.graph import StateGraph, START, END
-from typing import Any, Dict, TypedDict, List, Optional
-import operator
+from typing import TypedDict, List
 import os
+import time
 from dotenv import load_dotenv
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage
+from langchain_google_genai import ChatGoogleGenerativeAI
+import google.generativeai as genai
 
 load_dotenv()
 
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_community.vectorstores import Chroma
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+# --- 1. Configure Google GenAI directly ---
+# We use the raw SDK to upload files, as it's cleaner than LangChain for this specific task
+genai.configure(api_key=os.environ["GOOGLE_API_KEY"])
 
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, BaseMessage
-from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+# Global cache for the uploaded file handle
+UPLOADED_FILE = None
 
-try:
-    from api.prompts import SYSTEM_PROMPT, HUMAN_PROMPT
-except ImportError:
-    SYSTEM_PROMPT = "You are a helpful assistant."
-    HUMAN_PROMPT = "Context: {context}\n\nQuestion: {input}"
-
-class AgentState(TypedDict):
-    input: str
-    context: Dict[str, Any]
-    history: List[BaseMessage]
-    response: Any  
-
-try:
-
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
+def get_file_handle():
+    """Uploads the PDF to Google and returns the file handle."""
+    global UPLOADED_FILE
+    if UPLOADED_FILE:
+        return UPLOADED_FILE
+    
+    # Check for your PDF file (Adjust filename as needed)
+    # We prioritize the largest file or merge them if you prefer, 
+    # but for simplicity, let's load the main one.
+    target_file = None
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-    pdf1_path = os.path.join(BASE_DIR, "pdf1.pdf")
-    pdf2_path = os.path.join(BASE_DIR, "pdf2.pdf")
-
-    docs_to_load = []
-
-    if os.path.exists(pdf1_path):
-        docs_to_load.append(pdf1_path)
-
-    if os.path.exists(pdf2_path):
-        docs_to_load.append(pdf2_path)
-
-    if docs_to_load:
-        documents = []
-        for pdf_file in docs_to_load:
-            loader = PyPDFLoader(pdf_file)
-            documents.extend(loader.load())
+    
+    pdf1 = os.path.join(BASE_DIR, "pdf1.pdf")
+    if os.path.exists(pdf1):
+        target_file = pdf1
+    
+    # Note: If you have multiple files, Gemini supports uploading multiple,
+    # but let's start with one to fix the crash.
+    
+    if target_file:
+        print(f"Uploading {target_file} to Google...")
+        # This uploads the file to Google's cloud. 0 RAM used on Render.
+        myfile = genai.upload_file(target_file)
         
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-        texts = text_splitter.split_documents(documents)
+        # Wait for processing to complete
+        while myfile.state.name == "PROCESSING":
+            print("Processing file on Google servers...")
+            time.sleep(2)
+            myfile = genai.get_file(myfile.name)
+            
+        print(f"File ready: {myfile.uri}")
+        UPLOADED_FILE = myfile
+        return UPLOADED_FILE
+    
+    return None
 
-        vectorstore = Chroma.from_documents(documents=texts, embedding=embeddings)
-        retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
-    else:
-        print("Warning: PDF files not found. Initializing empty vectorstore.")
-        retriever = None
-
-except Exception as e:
-    print(f"RAG initialization error: {e}")
-    retriever = None
-
-
+# --- 2. Setup LLM ---
 llm = ChatGoogleGenerativeAI(
-    model="gemini-2.0-flash",
+    model="gemini-2.0-flash", 
     temperature=0.3,
     streaming=True
 )
 
-def retrieve_context(state: AgentState):
-    """Retrieves relevant context documents."""
-    query = state["input"]
-    
-    if retriever:
-        docs = retriever.invoke(query)
-        context = "\n\n".join([doc.page_content for doc in docs])
-    else:
-        context = "No documents found or RAG not initialized."
-        
-    return {"context": context}
+SYSTEM_PROMPT = "You are a helpful assistant. Use the provided document to answer questions."
+
+class AgentState(TypedDict):
+    input: str
+    history: List[BaseMessage]
 
 def generate_response(state: AgentState):
-    """Generates the response using Gemini-2.0-Flash."""
+    file_handle = get_file_handle()
     
-    prompt = ChatPromptTemplate.from_messages([
+    messages = [
         SystemMessage(content=SYSTEM_PROMPT),
-        MessagesPlaceholder(variable_name="history"),
-        HumanMessage(content=HUMAN_PROMPT.replace("{input}", state["input"]).replace("{context}", str(state["context"])))
-    ])
+    ]
+    
+    # If we have a file, we send it as a 'media' block
+    if file_handle:
+        # LangChain-Google-GenAI specific format for passing file handles
+        # We construct a message that contains the file reference
+        content_parts = [
+            {"type": "text", "text": f"User Question: {state['input']}"},
+            {
+                "type": "media",
+                "file_uri": file_handle.uri,
+                "mime_type": file_handle.mime_type
+            }
+        ]
+        messages.append(HumanMessage(content=content_parts))
+    else:
+        messages.append(HumanMessage(content=state['input']))
 
-    messages = prompt.invoke({"history": state.get("history", [])})
+    # Add history
+    messages.extend(state.get("history", []))
 
     response_stream = llm.stream(messages)
-
     return {"response": response_stream}
 
 def create_agent():
-    """Compiles the LangGraph StateGraph."""
     graph = StateGraph(AgentState)
-    graph.add_node("retrieve_context", retrieve_context)
     graph.add_node("generate_response", generate_response)
-    
-    graph.add_edge(START, "retrieve_context")
-    graph.add_edge("retrieve_context", "generate_response")
+    graph.add_edge(START, "generate_response")
     graph.add_edge("generate_response", END)
-    
     return graph.compile()
 
 def run_Agent(input_text: str):
-    """
-    Runs the agent and yields text chunks for streaming.
-    This acts as a generator for the frontend.
-    """
     agent = create_agent()
-    
     stream_iterator = agent.stream({"input": input_text, "history": []}) 
     
     for chunk in stream_iterator:
         if "generate_response" in chunk:
             response_stream = chunk["generate_response"]["response"]
-            
             for message_chunk in response_stream:
                 content = message_chunk.content
                 if content:
