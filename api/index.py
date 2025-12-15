@@ -1,10 +1,14 @@
-from flask import Flask, request, Response, stream_with_context, json
+from flask import Flask, request, Response, stream_with_context, json, render_template
 from flask_cors import CORS 
-from agent import run_Agent
+from api.agent import run_Agent
 import sys
 
 app = Flask(__name__)
 CORS(app) 
+
+@app.route("/", methods=["GET"])
+def home():
+    return render_template("index.html")
 
 @app.route("/agent", methods=["POST"])
 def agent_endpoint():
