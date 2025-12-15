@@ -40,4 +40,7 @@ def agent_endpoint():
         return Response(f"Internal Server Error: Could not initialize request: {str(e)}", status=500)
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    # This allows the app to accept the Port that Render assigns
+    import os
+    port = int(os.environ.get("PORT", 10000)) 
+    app.run(host="0.0.0.0", port=port)
